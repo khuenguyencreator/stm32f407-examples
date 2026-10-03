@@ -20,6 +20,7 @@ Code ví dụ các ngoại vi nâng cao trên **STM32F407VET6** (DAC, SDIO, USB 
 | [Bai6_STM32F407VE_USB_HOST_CDC](Bai6_STM32F407VE_USB_HOST_CDC) | USB Host CDC |
 | [Bai7_STM32F407VE_I2S_WAV_PLAYER](Bai7_STM32F407VE_I2S_WAV_PLAYER) | Phát file WAV qua I2S |
 | [Bai8_STM32F407VE_USB_MSC_Device](Bai8_STM32F407VE_USB_MSC_Device) | USB MSC Device dùng thẻ SD (SDIO) |
+| [Bai9_STM32F407VE_FSMC_TFT](Bai9_STM32F407VE_FSMC_TFT) | FSMC giao tiếp TFT LCD ILI9341 16 bit |
 
 ## Cách sử dụng
 
@@ -30,6 +31,7 @@ Code ví dụ các ngoại vi nâng cao trên **STM32F407VET6** (DAC, SDIO, USB 
 2. Mở file `MDK-ARM/*.uvprojx` trong thư mục bài muốn chạy bằng Keil µVision.
 3. Build (F7), cắm ST-Link rồi nạp (F8).
 4. Riêng `Bai8` chưa có sẵn project Keil: mở file `.ioc` bằng STM32CubeMX, chọn Toolchain / IDE là MDK-ARM rồi Generate Code để tạo project.
+5. `Bai9` hiện mới có mã nguồn (Core + Drivers), chưa có file `.ioc` và project Keil.
 
 ## Liên kết
 
