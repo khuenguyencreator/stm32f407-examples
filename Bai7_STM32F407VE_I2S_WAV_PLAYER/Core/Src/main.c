@@ -24,7 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,6 +34,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define CS43L22_ADDR      0x94      /* dia chi I2C (8 bit) cua CS43L22 */
+#define AUDIO_BUF_SIZE    4096      /* so mau 16 bit trong buffer DMA */
+#define WAV_FILE_NAME     "music.wav"
+
+#define PLAY_IDLE         0
+#define PLAY_RUNNING      1
+#define PLAY_DONE         2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,7 +55,13 @@ I2S_HandleTypeDef hi2s3;
 DMA_HandleTypeDef hdma_spi3_tx;
 
 /* USER CODE BEGIN PV */
+extern ApplicationTypeDef Appli_state;
 
+int16_t audio_buf[AUDIO_BUF_SIZE];
+volatile uint8_t half_done = 0;     /* DMA da phat xong nua dau buffer */
+volatile uint8_t full_done = 0;     /* DMA da phat xong nua sau buffer */
+uint8_t play_state = PLAY_IDLE;
+uint32_t data_remain = 0;           /* so byte am thanh con lai trong file */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -65,7 +78,125 @@ void MX_USB_HOST_Process(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* Ghi 1 thanh ghi cua CS43L22 qua I2C */
+static void CS43L22_Write(uint8_t reg, uint8_t value)
+{
+  uint8_t data[2] = {reg, value};
+  HAL_I2C_Master_Transmit(&hi2c1, CS43L22_ADDR, data, 2, 100);
+}
 
+/* Dat am luong 0 - 100 (%) */
+static void CS43L22_SetVolume(uint8_t volume)
+{
+  uint8_t vol = (uint8_t)((volume * 255) / 100);
+
+  /* Thanh ghi Master Volume: 0x19 = -102dB ... 0xFF = -0.5dB, 0x00 = 0dB */
+  if (vol > 0xE6)
+  {
+    vol = vol - 0xE7;
+  }
+  else
+  {
+    vol = vol + 0x19;
+  }
+  CS43L22_Write(0x20, vol);   /* Master Volume kenh A */
+  CS43L22_Write(0x21, vol);   /* Master Volume kenh B */
+}
+
+static void CS43L22_Init(uint8_t volume)
+{
+  /* Keo chan RESET (PD4) len 1 de CS43L22 hoat dong */
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_4, GPIO_PIN_SET);
+  HAL_Delay(10);
+
+  CS43L22_Write(0x02, 0x01);  /* Power Ctl 1: tat codec trong luc cau hinh */
+  CS43L22_Write(0x04, 0xAF);  /* Power Ctl 2: bat tai nghe, tat loa */
+  CS43L22_Write(0x05, 0x81);  /* Clocking: tu nhan dien toc do MCLK */
+  CS43L22_Write(0x06, 0x04);  /* Interface: slave, chuan I2S Philips, 16 bit */
+  CS43L22_SetVolume(volume);
+  CS43L22_Write(0x0A, 0x00);  /* Analog ZC and SR: tat */
+  CS43L22_Write(0x27, 0x00);  /* Limiter: tat */
+  CS43L22_Write(0x1F, 0x0F);  /* Tone: bass, treble mac dinh */
+  CS43L22_Write(0x1A, 0x0A);  /* PCM volume kenh A */
+  CS43L22_Write(0x1B, 0x0A);  /* PCM volume kenh B */
+  CS43L22_Write(0x0E, 0x06);  /* Misc Ctl: bat digital soft ramp */
+  CS43L22_Write(0x02, 0x9E);  /* Power Ctl 1: bat codec */
+}
+
+static uint32_t Read_LE32(const uint8_t *p)
+{
+  return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Mo file WAV, kiem tra dinh dang, dua con tro file toi dau du lieu am thanh */
+static uint8_t WAV_Open(const char *name)
+{
+  uint8_t header[12];
+  uint8_t chunk[8];
+  uint8_t fmt[16];
+  uint32_t size;
+  UINT br;
+
+  if (f_open(&USBHFile, name, FA_READ) != FR_OK)
+  {
+    return 0;
+  }
+  f_read(&USBHFile, header, 12, &br);
+  if (memcmp(header, "RIFF", 4) != 0 || memcmp(&header[8], "WAVE", 4) != 0)
+  {
+    f_close(&USBHFile);
+    return 0;
+  }
+
+  /* Duyet qua cac chunk cho toi khi gap chunk "data" */
+  while (1)
+  {
+    if (f_read(&USBHFile, chunk, 8, &br) != FR_OK || br < 8)
+    {
+      f_close(&USBHFile);
+      return 0;
+    }
+    size = Read_LE32(&chunk[4]);
+
+    if (memcmp(chunk, "fmt ", 4) == 0)
+    {
+      f_read(&USBHFile, fmt, 16, &br);
+      /* Chi ho tro WAV 2 kenh, 44100Hz, 16 bit */
+      if (fmt[2] != 2 || Read_LE32(&fmt[4]) != 44100 || fmt[14] != 16)
+      {
+        f_close(&USBHFile);
+        return 0;
+      }
+      f_lseek(&USBHFile, f_tell(&USBHFile) + size - 16);
+    }
+    else if (memcmp(chunk, "data", 4) == 0)
+    {
+      data_remain = size;
+      return 1;
+    }
+    else
+    {
+      f_lseek(&USBHFile, f_tell(&USBHFile) + size);   /* bo qua chunk khac */
+    }
+  }
+}
+
+/* Doc tiep du lieu tu file vao buffer, het file thi dien 0 (im lang) */
+static void WAV_Fill(int16_t *dst, uint32_t bytes)
+{
+  UINT br = 0;
+  uint32_t n = (data_remain < bytes) ? data_remain : bytes;
+
+  if (n > 0)
+  {
+    f_read(&USBHFile, dst, n, &br);
+  }
+  data_remain -= br;
+  if (br < bytes)
+  {
+    memset((uint8_t *)dst + br, 0, bytes - br);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -102,7 +233,17 @@ int main(void)
   MX_FATFS_Init();
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 2 */
+  GPIO_InitTypeDef gpio = {0};
 
+  /* PD4 noi voi chan RESET cua CS43L22 */
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  gpio.Pin = GPIO_PIN_4;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &gpio);
+
+  CS43L22_Init(70);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -113,6 +254,50 @@ int main(void)
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
+    /* USB da san sang: mount, mo file WAV va bat dau phat */
+    if (Appli_state == APPLICATION_READY && play_state == PLAY_IDLE)
+    {
+      play_state = PLAY_DONE;
+      if (f_mount(&USBHFatFS, USBHPath, 1) == FR_OK && WAV_Open(WAV_FILE_NAME))
+      {
+        WAV_Fill(audio_buf, sizeof(audio_buf));
+        HAL_I2S_Transmit_DMA(&hi2s3, (uint16_t *)audio_buf, AUDIO_BUF_SIZE);
+        play_state = PLAY_RUNNING;
+      }
+    }
+
+    if (play_state == PLAY_RUNNING)
+    {
+      /* DMA dang phat nua nay thi nap du lieu moi vao nua kia */
+      if (half_done)
+      {
+        half_done = 0;
+        WAV_Fill(&audio_buf[0], sizeof(audio_buf) / 2);
+      }
+      if (full_done)
+      {
+        full_done = 0;
+        WAV_Fill(&audio_buf[AUDIO_BUF_SIZE / 2], sizeof(audio_buf) / 2);
+      }
+      if (data_remain == 0)
+      {
+        HAL_I2S_DMAStop(&hi2s3);
+        f_close(&USBHFile);
+        play_state = PLAY_DONE;
+      }
+    }
+
+    /* Rut USB ra: dung phat, cho cam lai */
+    if (Appli_state == APPLICATION_DISCONNECT)
+    {
+      if (play_state == PLAY_RUNNING)
+      {
+        HAL_I2S_DMAStop(&hi2s3);
+      }
+      f_mount(NULL, USBHPath, 0);
+      play_state = PLAY_IDLE;
+      Appli_state = APPLICATION_IDLE;
+    }
   }
   /* USER CODE END 3 */
 }
@@ -160,7 +345,7 @@ void SystemClock_Config(void)
     Error_Handler();
   }
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_I2S;
-  PeriphClkInitStruct.PLLI2S.PLLI2SN = 50;
+  PeriphClkInitStruct.PLLI2S.PLLI2SN = 271;
   PeriphClkInitStruct.PLLI2S.PLLI2SR = 2;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
@@ -290,7 +475,21 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+  if (hi2s->Instance == SPI3)
+  {
+    half_done = 1;
+  }
+}
 
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+  if (hi2s->Instance == SPI3)
+  {
+    full_done = 1;
+  }
+}
 /* USER CODE END 4 */
 
 /**

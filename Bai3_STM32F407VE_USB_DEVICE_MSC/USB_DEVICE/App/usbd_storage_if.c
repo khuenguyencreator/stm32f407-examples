@@ -230,7 +230,7 @@ int8_t STORAGE_IsWriteProtected_FS(uint8_t lun)
 int8_t STORAGE_Read_FS(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t blk_len)
 {
   /* USER CODE BEGIN 6 */
-	memcpy(buf, &buffer[blk_addr*STORAGE_BLK_SIZ], blk_len);
+	memcpy(buf, &buffer[blk_addr*STORAGE_BLK_SIZ], blk_len*STORAGE_BLK_SIZ);
   return (USBD_OK);
   /* USER CODE END 6 */
 }

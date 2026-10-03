@@ -22,7 +22,7 @@
 #include "usbd_storage_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#define SD_TIMEOUT  1000
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -113,7 +113,7 @@ const int8_t STORAGE_Inquirydata_FS[] = {/* 36 */
 /* USER CODE END INQUIRY_DATA_FS */
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
-
+extern SD_HandleTypeDef hsd;
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -177,7 +177,7 @@ USBD_StorageTypeDef USBD_Storage_Interface_fops_FS =
 int8_t STORAGE_Init_FS(uint8_t lun)
 {
   /* USER CODE BEGIN 2 */
- UNUSED(lun);
+  UNUSED(lun);
 
   return (USBD_OK);
   /* USER CODE END 2 */
@@ -193,10 +193,14 @@ int8_t STORAGE_Init_FS(uint8_t lun)
 int8_t STORAGE_GetCapacity_FS(uint8_t lun, uint32_t *block_num, uint16_t *block_size)
 {
   /* USER CODE BEGIN 3 */
+  HAL_SD_CardInfoTypeDef info;
+
   UNUSED(lun);
 
-  *block_num  = STORAGE_BLK_NBR;
-  *block_size = STORAGE_BLK_SIZ;
+  /* Lay so block va kich thuoc block that cua the SD */
+  HAL_SD_GetCardInfo(&hsd, &info);
+  *block_num  = info.LogBlockNbr;
+  *block_size = info.LogBlockSize;
   return (USBD_OK);
   /* USER CODE END 3 */
 }
@@ -211,6 +215,11 @@ int8_t STORAGE_IsReady_FS(uint8_t lun)
   /* USER CODE BEGIN 4 */
   UNUSED(lun);
 
+  /* The SD dang ban (dang ghi) thi bao chua san sang */
+  if (HAL_SD_GetCardState(&hsd) != HAL_SD_CARD_TRANSFER)
+  {
+    return (USBD_FAIL);
+  }
   return (USBD_OK);
   /* USER CODE END 4 */
 }
@@ -241,10 +250,15 @@ int8_t STORAGE_Read_FS(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t bl
 {
   /* USER CODE BEGIN 6 */
   UNUSED(lun);
-  UNUSED(buf);
-  UNUSED(blk_addr);
-  UNUSED(blk_len);
 
+  if (HAL_SD_ReadBlocks(&hsd, buf, blk_addr, blk_len, SD_TIMEOUT) != HAL_OK)
+  {
+    return (USBD_FAIL);
+  }
+  /* Cho the SD doc xong, tro ve trang thai TRANSFER */
+  while (HAL_SD_GetCardState(&hsd) != HAL_SD_CARD_TRANSFER)
+  {
+  }
   return (USBD_OK);
   /* USER CODE END 6 */
 }
@@ -261,10 +275,15 @@ int8_t STORAGE_Write_FS(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t b
 {
   /* USER CODE BEGIN 7 */
   UNUSED(lun);
-  UNUSED(buf);
-  UNUSED(blk_addr);
-  UNUSED(blk_len);
 
+  if (HAL_SD_WriteBlocks(&hsd, buf, blk_addr, blk_len, SD_TIMEOUT) != HAL_OK)
+  {
+    return (USBD_FAIL);
+  }
+  /* Cho the SD ghi xong vao bo nho flash ben trong */
+  while (HAL_SD_GetCardState(&hsd) != HAL_SD_CARD_TRANSFER)
+  {
+  }
   return (USBD_OK);
   /* USER CODE END 7 */
 }
